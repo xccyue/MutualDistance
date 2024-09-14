@@ -10,7 +10,7 @@ For the motion sequences used in paper are from [ContAwareMotionPred](https://gi
 
 After downloading the dataset, please update the path of motion sequence, scene sdf and scene points in the code.
 
-We also provide the preprocessed sdf file on [google drive](https://drive.google.com/drive/folders/1QyW6gSJdd2KVerNPAS8xf_wOU06OrNyn?usp=sharing)
+We also provide the preprocessed scene sdf file and checkpoints on [google drive](https://drive.google.com/drive/folders/1QyW6gSJdd2KVerNPAS8xf_wOU06OrNyn?usp=sharing)
 
 After downloading the checkpoints, replace the folder with same name under the GTAIM.
 
