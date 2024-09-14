@@ -14,6 +14,22 @@ We also provide the preprocessed sdf file on [google drive](https://drive.google
 
 After downloading the checkpoints, replace the folder with same name under the GTAIM.
 
+### Training on GTA-IM
+Please open the corresponding folder and run 
+
+```
+python stage1/train_motion.py 
+```
+
+```
+python stage2/train_motion.py 
+```
+
+```
+python finalmodel/train_motion.py --resume_model_s1 xxx/MutualDistance/GTAIM/checkpoints/stage1 --resume_model_s2 xxx/MutualDistance/GTAIM/checkpoints/stage2
+```
+
+xxx is the path on your systerm.
 
 ### Evaluation on GTA-IM
 Please open the corresponding folder and run 

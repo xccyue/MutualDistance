@@ -9,7 +9,7 @@ import torch
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from model.basemodel import MotionGRU, SceneNet, SDFNet, GCN_S, GCN_H, MotionGRU_S1
+from model.basemodel import MotionGRU, SceneNet, SDFNet
 from utils.utilities import Console, Ploter
 from utils.visualization import render_attention, frame2video, render_reconstructed_motion_in_scene, render_sample_k_motion_in_scene
 import utils.configuration as config
@@ -24,9 +24,6 @@ import pickle
 import matplotlib.pyplot as plt
 from torch.optim import lr_scheduler
 from utils.data_utils import get_dct_matrix
-
-import numpy as np
-import pandas as pd
 # import kaolin
 # from kaolin.ops.mesh import index_vertices_by_faces
 
@@ -100,27 +97,28 @@ def get_scheduler(optimizer, policy, nepoch_fix=None, nepoch=None, decay_step=No
 class MotionSolver():
     def __init__(self, conf: Any, dataloader: dict):
         self.config = conf
-        self.scene_net_s2 = SceneNet(self.config).to(self.config.device)
+
+        # self.cond_net = CondNet(self.config).to(self.config.device)
+        # self.base_model = MotionModel(self.config).to(self.config.device)
+
+        # # to be done
+        self.scene_net = SceneNet(self.config).to(self.config.device)
+        # self.motion_net = MotionNet(self.config).to(self.config.device)
         self.sdf_net = SDFNet(self.config).to(self.config.device)
         self.motion_decoder = MotionGRU(self.config).to(self.config.device)
-        self.bs = self.config.batch_size
-
-        self.scene_net_s1 = SceneNet(self.config).to(self.config.device)
-        self.sdf_gcn = GCN_S(self.config).to(self.config.device)
-        self.hsdf_gcn = GCN_H(self.config).to(self.config.device)
-        self.motion_encoder = MotionGRU_S1(self.config).to(self.config.device)
-        self.dct_n = config.dct_n
-
         self.dataloader = dataloader
         scene_point_path = config.dataset_scene_points
         with open(scene_point_path,'rb') as f:
             data = pickle.load(f)
         data = torch.FloatTensor(data)
+        # self.scene_points = torch.FloatTensor(data)
 
+        
+        with open(config.dataset_scene_points, 'rb') as f:
+            data = pickle.load(f)
 
         scene_points = data
         scene_points = torch.tensor(scene_points).cuda().float()
-        self.sp = scene_points
         self.scene_points = scene_points.unsqueeze(0).repeat(config.batch_size*60,1,1)
         self.scene_points1 = scene_points.unsqueeze(0).repeat(config.batch_size*90,1,1)
         self.rootidx = 14
@@ -134,19 +132,14 @@ class MotionSolver():
 
         self.optimizer_h = optim.Adam(
             [
-                {'params': list(self.scene_net_s2.parameters())},
+                {'params': list(self.scene_net.parameters())},
                 {'params': list(self.motion_decoder.parameters())},
-                {'params': list(self.sdf_net.parameters())},
-                {'params': list(self.scene_net_s1.parameters())},
-                {'params': list(self.sdf_gcn.parameters())},
-                {'params': list(self.hsdf_gcn.parameters())},
-                {'params': list(self.motion_encoder.parameters())}
+                {'params': list(self.sdf_net.parameters())}
                 
             ],
             lr = self.config.lr
         )
-        # print("model size s1", self.print_model_size(self.scene_net_s1)+self.print_model_size(self.sdf_gcn)+self.print_model_size(self.hsdf_gcn)+self.print_model_size(self.motion_encoder))
-        # print("model size s2", self.print_model_size(self.scene_net_s2) + self.print_model_size(self.motion_decoder))
+
 
         self.scheduler = get_scheduler(self.optimizer_h, policy='step', decay_step=30)
 
@@ -160,110 +153,54 @@ class MotionSolver():
             'loss': float("inf"),
             'rec_loss': float("inf")
         }
-    def print_model_size(self, model):
-        num_params = sum(p.numel() for p in list(model.parameters())) / 1000000.0
-        model_size_bytes = sum(p.element_size() * p.numel() for p in model.parameters() if p.requires_grad)
-        model_size_mb = model_size_bytes / (1024 * 1024)
-        print(f"Total parameters M: {num_params}")
-        print(f"Total size (MB): {model_size_mb:.2f}")
-        return num_params
+    
     def _save_state_dict(self, epoch: int, name: str):
-
         # saved_cond_net_state_dict = {k: v for k, v in self.cond_net.state_dict().items() if 'bert' not in k} # don't save bert weights
         torch.save({
             'epoch': epoch + 1,
-            'scene_net_s2_state_dict': self.scene_net_s2.state_dict(),
+            'scene_net_state_dict': self.scene_net.state_dict(),
             'sdf_net_state_dict': self.sdf_net.state_dict(),
             'motion_decoder_state_dict': self.motion_decoder.state_dict(),
-            'optimizer_h_state_dict': self.optimizer_h.state_dict(),
-            'scene_net_s1_state_dict': self.scene_net_s1.state_dict(),
-            'sdf_gcn_state_dict': self.sdf_gcn.state_dict(),
-            'hsdf_gcn_state_dict': self.hsdf_gcn.state_dict(),
-            'motion_encoder_state_dict':self.motion_encoder.state_dict()
+            'optimizer_h_state_dict': self.optimizer_h.state_dict()
         }, os.path.join(self.config.log_dir, '{}.pth'.format(name)))
 
     def _load_state_dict(self):
-        if self.config.resume_model != '':
-     
-            if os.path.isdir(self.config.resume_model):
-                ckp_file = os.path.join(self.config.resume_model, 'epoch0.pth')
-            elif os.path.isfile(self.config.resume_model):
-                ckp_file = self.config.resume_model
-            else:
-                return 0
-            state_dict = torch.load(ckp_file)
-            self.motion_decoder.load_state_dict(state_dict['motion_decoder_state_dict'])
-            self.sdf_net.load_state_dict(state_dict['sdf_net_state_dict'])
-            self.scene_net_s2.load_state_dict(state_dict['scene_net_s2_state_dict'])
-            self.motion_encoder.load_state_dict(state_dict['motion_encoder_state_dict'])
-            self.sdf_gcn.load_state_dict(state_dict['sdf_gcn_state_dict'])
-            self.hsdf_gcn.load_state_dict(state_dict['hsdf_gcn_state_dict'])
-            self.scene_net_s1.load_state_dict(state_dict['scene_net_s1_state_dict'])
-            # self.optimizer_h.load_state_dict(state_dict=['optimizer_h_state_dict'])
-            # self.scheduler.load_state_dict(state_dict=['scheduler_state_dict'])
-            Console.log('Load checkpoint: {} start from {}'.format(ckp_file, state_dict['epoch']))
-            
+        if os.path.isdir(self.config.resume_model):
+            ckp_file = os.path.join(self.config.resume_model, 'epoch40.pth')
+        elif os.path.isfile(self.config.resume_model):
+            ckp_file = self.config.resume_model
         else:
-           
-            if os.path.isdir(self.config.resume_model_s2):
-                ckp_file = os.path.join(self.config.resume_model_s2, 'epoch40.pth')
-            elif os.path.isfile(self.config.resume_model_s2):
-                ckp_file = self.config.resume_model_s2
-            else:
-                return 0
-        
-            print("the ckp file is ", ckp_file)
-            state_dict = torch.load(ckp_file)
-            print(state_dict.keys())
-            self.motion_decoder.load_state_dict(state_dict['motion_decoder_state_dict'])
-            self.sdf_net.load_state_dict(state_dict['sdf_net_state_dict'])
-            self.scene_net_s2.load_state_dict(state_dict['scene_net_state_dict'])
-            Console.log('Load checkpoint: {}. start from {}'.format(ckp_file, state_dict['epoch']))
+            return 0
+     
+        print("the ckp file is ", ckp_file)
+        state_dict = torch.load(ckp_file)
+        # ## load cond net weight
+        # cond_net_dict = self.cond_net.state_dict()
+        # cond_net_dict.update(state_dict['cond_net_state_dict'])
+        # self.cond_net.load_state_dict(cond_net_dict)
+        # ## load cvae model weight
+        # self.base_model.load_state_dict(state_dict['base_model_state_dict'])
 
-            if os.path.isdir(self.config.resume_model_s1):
-                ckp_file = os.path.join(self.config.resume_model_s1, 'epoch40.pth')
-            elif os.path.isfile(self.config.resume_model_s1):
-                ckp_file = self.config.resume_model_s1
-            else:
-                return 0
-        
-            print("the ckp file is ", ckp_file)
-            state_dict = torch.load(ckp_file)
-            print(state_dict.keys())
-            self.motion_encoder.load_state_dict(state_dict['motion_encoder_state_dict'])
-            self.sdf_gcn.load_state_dict(state_dict['sdf_gcn_state_dict'])
-            self.hsdf_gcn.load_state_dict(state_dict['hsdf_gcn_state_dict'])
-            self.scene_net_s1.load_state_dict(state_dict['scene_net_state_dict'])
-            Console.log('Load checkpoint: {}. start from {}'.format(ckp_file,state_dict['epoch']))
-
-
-
-
-
-        return 0
+        self.motion_decoder.load_state_dict(state_dict['motion_decoder_state_dict'])
+        self.sdf_net.load_state_dict(state_dict['sdf_net_state_dict'])
+        self.scene_net.load_state_dict(state_dict['scene_net_state_dict'])
+        Console.log('Load checkpoint: {}'.format(ckp_file))
+        return state_dict['epoch']
+    
     def _set_phase(self, phase: str):
         if phase == "train":
             self.sdf_net.train()
-            self.scene_net_s2.train()
+            self.scene_net.train()
             # self.motion_net.train()
             self.motion_decoder.train()
-            
-            self.scene_net_s1.train()
-            self.hsdf_gcn.train()
-            self.sdf_gcn.train()
-            self.motion_encoder.train()
         elif phase == "val":
             self.sdf_net.eval()
-            self.scene_net_s2.eval()
-            # self.motion_net.train()
+            self.scene_net.eval()
+            # self.motion_net.eval()
             self.motion_decoder.eval()
-            
-            self.scene_net_s1.eval()
-            self.hsdf_gcn.eval()
-            self.sdf_gcn.eval()
-            self.motion_encoder.eval()
         else:
             raise Exception("Invalid phase")
+    
 
     def __call__(self):
 
@@ -293,7 +230,7 @@ class MotionSolver():
         self._save_state_dict(epoch_id, 'model_last')
 
     def _forward(
-        self, history_body, scene_sdf, sdf_in, hsdf_in
+        self, history_body, scene_sdf, motion_sdf, hsdf
     ):
         """ Forward function to predict
 
@@ -310,10 +247,10 @@ class MotionSolver():
         Return:
             reconstruct results and (mu, logvar) pairs
         """
-        B, S,Np, _ = history_body.shape
+        B, S,N, _ = history_body.shape
         # print(trans_shape,orient_shape,pose_body_shape,pose_hand_shape)
         # B S 162
-        history_body = history_body.reshape(B,S,Np*3)
+        history_body = history_body.reshape(B,S,N*3)
         # print("************")
         # B S 162
         # print(history_motion[:,-1,:3])
@@ -324,68 +261,18 @@ class MotionSolver():
         # print("----------------")
         # print("input shape", history_motion.shape) 25 64 162
         scene_sdf = scene_sdf.unsqueeze(1)
-        # start_time_s1 = time.time()
-        fs = self.scene_net_s1(scene_sdf)
-        # fs B 128
-        fh = self.motion_encoder(history_motion)
-        # fh B 128
-        # sdf_in B N L
-        # beta B 10
-        pred_sdf = self.sdf_gcn(sdf_in,fs,fh)
-        pred_hsdf = self.hsdf_gcn(hsdf_in,fs,fh)
-        # end_time_s1 = time.time()
-
-
-
-        T = 90
-        N = sdf_in.shape[1]
-        dct_n = self.dct_n
-        _, idct_m = get_dct_matrix(T)
-        idct_m = torch.FloatTensor(idct_m).cuda()
-        B = pred_sdf.shape[0]
-        pred_sdf = pred_sdf.view(B,-1)
-        # L B*N
-        pred_t = pred_sdf.view(-1, dct_n).transpose(0,1)
-        pred_expmap = torch.matmul(idct_m[:, :dct_n], pred_t).transpose(0, 1).contiguous().view(-1, N,
-                                                                                               T).transpose(1, 2)
-        hl = self.config.history_len
-
-        motion_sdf = pred_expmap
-
-
-        T = 90
-        N = hsdf_in.shape[1]
-        dct_n = self.dct_n
-        _, idct_m = get_dct_matrix(T)
-        idct_m = torch.FloatTensor(idct_m).cuda()
-        B = pred_hsdf.shape[0]
-        pred_hsdf = pred_hsdf.view(B,-1)
-        # L B*N
-        pred_ht = pred_hsdf.view(-1, dct_n).transpose(0,1)
-        pred_hexpmap = torch.matmul(idct_m[:, :dct_n], pred_ht).transpose(0, 1).contiguous().view(-1, N,
-                                                                                               T).transpose(1, 2)
-        hl = self.config.history_len
-
-        human_sdf = pred_hexpmap
-
-
-
-
-
-
-        fs = self.scene_net_s2(scene_sdf)
+        fs = self.scene_net(scene_sdf)
         fsdf = self.sdf_net(motion_sdf)
-        hsdf = human_sdf.permute(1,0,2)
+        hsdf = hsdf.permute(1,0,2)
         fsdf = fsdf.permute(1,0,2)
         output = self.motion_decoder(history_motion, fs, fsdf, hsdf)
         output = output.permute(1,0,2)
-        output = output.reshape(B,60,Np,3)
+        output = output.reshape(B,60,N,3)
+        # print("output",output.shape)
         pred_body = output
+        return pred_body
 
-
-        return pred_body, motion_sdf, human_sdf
-
-
+    
 
     def get_sdf_grid_batch(self,  verts, scene_sdf1, scene_index1):
         
@@ -516,207 +403,36 @@ class MotionSolver():
 
         rec_hsdf_loss = F.l1_loss(rec_hsdf, future_hsdf)
         rec_sdf_loss = F.l1_loss(rec_sdf, future_msdf)
-        rec_sdf_err = torch.mean(torch.abs(rec_sdf - future_msdf), dim = (0,2))
-        rec_hsdf_err = torch.mean(torch.abs(rec_hsdf - future_hsdf), dim = (0,2))
+
         
-        return  rec_trans_loss, rec_body_pose_loss, rec_sdf_loss, rec_hsdf_loss, rec_sdf_err, rec_hsdf_err
+        return  rec_trans_loss, rec_body_pose_loss, rec_sdf_loss, rec_hsdf_loss
 
-
-
-    def _rotate_crop_sdf(self,location, scene_sdf, index1,index2,R, sdf_len=100):
-
-        batch_size = location.shape[0]
-        location = location.reshape(batch_size,3)
-
-
-        # Define the volume's parameters
-        resolution = 0.05
-        length = 5.0
-        half_length = length / 2
-        num_points = int(length / resolution)
-
-        # Generate a range of offsets with the given resolution
-        offsets = torch.linspace(-half_length, half_length-resolution, num_points)
-
-        # Create a 3D meshgrid for the x, y, z coordinates
-        X, Y, Z = torch.meshgrid(offsets, offsets, offsets, indexing='ij')
-
-        # Adjust by the center point values
-        X = X + location[:, 0, None, None, None]
-        Y = Y + location[:, 1, None, None, None]
-        Z = Z + location[:, 2, None, None, None]
-
-        # Stack the coordinates to get the [batch_size, 100, 100, 100, 3] shape
-        volume = torch.stack((X, Y, Z), axis=-1).cuda().float()
-        location = location.cuda()
-        index = torch.zeros(batch_size,6).cuda()
-        index[:,:3] = volume[:,0,0,0,:]
-        index[:,3:] = volume[:,99,99,99,:]
-        index[:,:3] -= location
-        index[:,3:] -= location
-        # Reshape the volume for transformation
-        volume = volume.view(batch_size, -1, 3).transpose(1, 2)
-        R_inverse = torch.linalg.inv(R)
-        volume = torch.matmul(R_inverse, volume)
-        volume = volume.transpose(1, 2).view(batch_size, num_points**3, 3)
-        volume = 2*((volume - index1[:,None,:])/(index2[:,None,:] - index1[:,None,:]) - 0.5)
-        # print(volume)
-
-            # Mask out-of-range coordinates
-        out_of_range_mask = (volume > 1) | (volume < -1)
-        out_of_range_rows = torch.any(out_of_range_mask, dim=2)
-        out_of_range_indices = torch.where(out_of_range_rows)
-
-        # Set the values of the out-of-range points to 0
-        volume[out_of_range_indices] = 0
-        scene_sdf = scene_sdf.float()
-        volume = volume.float()
-        sdf_volume = F.grid_sample(scene_sdf[:,None],volume[:,None,None,:,[2,1,0]], align_corners=True)
-
-        sdf_volume = sdf_volume.view(batch_size, num_points**3)
-        # sdf_volume[out_of_range_indices[0], out_of_range_indices[1]] = 0
-        sdf_volume[out_of_range_indices] = 0
-        sdf_volume = sdf_volume.view(batch_size, num_points, num_points, num_points).float()
- 
-
-        return sdf_volume, index
 
 
 
     def _train(self, train_dataloader: DataLoader, epoch_id: int):
         phase = 'train'
         self.log[phase][epoch_id] = defaultdict(list)
-        rec_sdf_err = torch.zeros(60).cuda()
-        rec_hsdf_err = torch.zeros(60).cuda()
-        cont = 0
-        dct_n = 90
-        dct_m,_ = get_dct_matrix(90)
-        pad_idx = np.repeat([30-1],60)
-        i_idx = np.append(np.arange(0,30),pad_idx)
+
         for data in tqdm(train_dataloader):
 
             ## unpack data
             # [pose, scene_sdf, scene_origin, item_key, index, msdf_input, hsdf_input, msdf_in, hsdf_in] = data
-            [pose_rotate, scene_origin_rotate, item_key, scene_sdf_origin, index1, index2, rotation_matrix] = data
-            B, S, N, _ = pose_rotate.shape
-            scene_sdf_origin = scene_sdf_origin.cuda().float()
-            
-            
-            index1 = index1.cuda()
-            index2 = index2.cuda()
-            rotation_matrix = rotation_matrix.cuda()
-
-            scene_sdf, index = self._rotate_crop_sdf(scene_origin_rotate,scene_sdf_origin,index1,index2,rotation_matrix,sdf_len=100)
-            pose = pose_rotate.cuda().float()
+            [pose, scene_sdf, scene_origin, item_key, index] = data
+            B, S, N, _ = pose.shape
 
 
 
-            dct_m_in = torch.tensor(dct_m).cuda().unsqueeze(0).repeat(B,1,1).float()
-            msdf_input = self.get_sdf_grid_batch(pose,scene_sdf,index)
-            hsdf_input = self._get_hsdf(pose,self.scene_points1)
-            hsdf_in = torch.bmm(dct_m_in[:,:dct_n,:],hsdf_input[:,i_idx,:])
-            msdf_in = torch.bmm(dct_m_in[:,:dct_n,:], msdf_input[:,i_idx,:])
-            hsdf_in = hsdf_in.transpose(1,2)
-            msdf_in = msdf_in.transpose(1,2)
-            
-
-            with torch.no_grad():
-                bs = pose.shape[0]
-                nj = pose.shape[2]
-                joints_orig = pose[:, :, 14:15].clone()
-                pose = pose - joints_orig
-                pose[:, :, 14:15] = joints_orig
-            
-            hlen = self.config.history_len
-            future_motion_sdf = msdf_input[:,hlen:,:]
-
-            history_pose = pose[:,:hlen,:,:]
-            future_pose = pose[:,hlen:,:,:]
-
-            
-
-        
-            future_hsdf = hsdf_input[:,hlen:,:]
-            pred_body, pred_msdf, pred_hsdf = self._forward(
-                history_pose,scene_sdf,msdf_in,hsdf_in
-            )
-
-            pred_msdf_loss = F.l1_loss(pred_msdf, msdf_input)
-            pred_hsdf_loss = F.l1_loss(pred_hsdf, hsdf_input)
-            forward_time = time.time()
-            [ rec_trans_loss, rec_body_pose_loss, rec_sdf_loss, rec_hsdf_loss, rec_sdf_err, rec_hsdf_err] = self._cal_loss(
-                future_pose, pred_body, future_hsdf, future_motion_sdf, self.rootidx, scene_sdf, index, self.scene_points
-            )
-         
-            rec_loss = self.config.weight_loss_rec * rec_trans_loss + \
-                        self.config.weight_loss_rec_body_pose * rec_body_pose_loss
-            loss = self.config.weight_loss_sdf * rec_sdf_loss + \
-            rec_loss + rec_hsdf_loss + pred_msdf_loss + pred_hsdf_loss
-
-            ## backward
-            self.optimizer_h.zero_grad()
-            loss.backward()
-            self.optimizer_h.step()
-            self.log[phase][epoch_id]['loss'].append(loss.item())
-            self.log[phase][epoch_id]['rec_loss'].append(rec_loss.item())
-            self.log[phase][epoch_id]['rec_trans_loss'].append(rec_trans_loss.item())
-            self.log[phase][epoch_id]['rec_orient_loss'].append(0)
-            self.log[phase][epoch_id]['rec_body_pose_loss'].append(rec_body_pose_loss.item())
-            self.log[phase][epoch_id]['rec_hand_pose_loss'].append(0)
-            self.log[phase][epoch_id]['rec_sdf_loss'].append(rec_sdf_loss.item())
-            self.log[phase][epoch_id]['rec_hsdf_loss'].append(rec_hsdf_loss.item())
-            # self.log[phase][epoch_id]['smooth_loss1'].append(smooth_loss1.item())
-        self.scheduler.step()
-        my_lr = self.scheduler.optimizer.param_groups[0]['lr']
-        print('lr',my_lr)
-    
-    def _val(self, val_dataloader: DataLoader, epoch_id: int):
-        phase = 'val'
-        self.log[phase][epoch_id] = defaultdict(list)
-        self.scene_points = self.sp.unsqueeze(0).repeat(self.bs*60,1,1)
-        self.scene_points1 = self.sp.unsqueeze(0).repeat(self.bs*90,1,1)
-        sdf_err = torch.zeros(90).cuda()
-        hsdf_err = torch.zeros(90).cuda()
-        rec_sdf_err = torch.zeros(60).cuda()
-        rec_hsdf_err = torch.zeros(60).cuda()
-        cont = 0
-        dct_n = 90
-        dct_m,_ = get_dct_matrix(90)
-        pad_idx = np.repeat([30-1],60)
-        i_idx = np.append(np.arange(0,30),pad_idx)
-        for data in tqdm(val_dataloader):
-
-            ## unpack data
-            # [pose, scene_sdf, scene_origin, item_key, index, msdf_input, hsdf_input, msdf_in, hsdf_in] = data
-            [pose_rotate, scene_origin_rotate, item_key, scene_sdf_origin, index1, index2, rotation_matrix] = data
-            B, S, N, _ = pose_rotate.shape
-            scene_sdf_origin = scene_sdf_origin.cuda().float()
-            
-            
-            index1 = index1.cuda()
-            index2 = index2.cuda()
-            rotation_matrix = rotation_matrix.cuda()
-
-            scene_sdf, index = self._rotate_crop_sdf(scene_origin_rotate,scene_sdf_origin,index1,index2,rotation_matrix,sdf_len=100)
-            pose = pose_rotate.cuda().float()
-
-            dct_m_in = torch.tensor(dct_m).cuda().unsqueeze(0).repeat(B,1,1).float()
-            msdf_input = self.get_sdf_grid_batch(pose,scene_sdf,index)
-            hsdf_input = self._get_hsdf(pose,self.scene_points1)
-            hsdf_in = torch.bmm(dct_m_in[:,:dct_n,:],hsdf_input[:,i_idx,:])
-            msdf_in = torch.bmm(dct_m_in[:,:dct_n,:], msdf_input[:,i_idx,:])
-            hsdf_in = hsdf_in.transpose(1,2)
-            msdf_in = msdf_in.transpose(1,2)
-            
 
             scene_sdf = scene_sdf.cuda()
             pose = pose.cuda()
             index = index.cuda()
-
-
+            
+            # msdf_input = msdf_input.cuda()
+            # hsdf_input = hsdf_input.cuda()
             with torch.no_grad():
-                # msdf_input = self.get_sdf_grid_batch(pose,scene_sdf, index)
-                # hsdf_input = self._get_hsdf(pose, self.scene_points1)
+                msdf_input = self.get_sdf_grid_batch(pose,scene_sdf, index)
+                hsdf_input = self._get_hsdf(pose, self.scene_points1)
                 bs = pose.shape[0]
                 nj = pose.shape[2]
                 joints_orig = pose[:, :, 14:15].clone()
@@ -737,26 +453,121 @@ class MotionSolver():
 
         
             future_hsdf = hsdf_input[:,hlen:,:]
-            pred_body, pred_msdf, pred_hsdf = self._forward(
-                history_pose,scene_sdf,msdf_in,hsdf_in
+            # print("-----------------")
+            # future_motion_sdf = self._get_motion_sdf(future_trans,future_orient,future_pose_body,future_pose_hand,betas,scene_sdf,scene_radius, True)
+            # print(future_motion_sdf.shape)
+           
+            pred_body = self._forward(
+                history_pose,scene_sdf,msdf_input,hsdf_input
             )
-
-            pred_msdf_loss = F.l1_loss(pred_msdf, msdf_input)
-            pred_hsdf_loss = F.l1_loss(pred_hsdf, hsdf_input)
-            sdf_err = sdf_err + torch.mean(torch.abs(pred_msdf - msdf_input),dim=(0,2))
-            hsdf_err = hsdf_err + torch.mean(torch.abs(pred_hsdf - hsdf_input),dim=(0,2))
-            cont = cont + 1
-
+            # print('2', pose.shape)
+            # print(pred_trans.shape)
             forward_time = time.time()
-            [ rec_trans_loss, rec_body_pose_loss, rec_sdf_loss, rec_hsdf_loss, rec_sdf_e, rec_hsdf_e] = self._cal_loss(
+            [ rec_trans_loss, rec_body_pose_loss, rec_sdf_loss, rec_hsdf_loss] = self._cal_loss(
                 future_pose, pred_body, future_hsdf, future_motion_sdf, self.rootidx, scene_sdf, index, self.scene_points
             )
-            rec_sdf_err = rec_sdf_err + rec_sdf_e
-            rec_hsdf_err = rec_hsdf_err + rec_hsdf_e
+         
+            # rec_loss = self.config.weight_loss_rec * rec_trans_loss + \
+            #             self.config.weight_loss_rec * rec_orient_loss + \
+            #             self.config.weight_loss_rec_body_pose * rec_body_pose_loss + \
+            #             self.config.weight_loss_rec_hand_pose * rec_hand_pose_loss
+            # loss = self.config.weight_loss_sdf * rec_sdf_loss + \
+            #         rec_loss
             rec_loss = self.config.weight_loss_rec * rec_trans_loss + \
                         self.config.weight_loss_rec_body_pose * rec_body_pose_loss
             loss = self.config.weight_loss_sdf * rec_sdf_loss + \
-            rec_loss + rec_hsdf_loss + 0.5*pred_msdf_loss + 0.5*pred_hsdf_loss
+            rec_loss + rec_hsdf_loss
+
+            ## backward
+            self.optimizer_h.zero_grad()
+            loss.backward()
+            self.optimizer_h.step()
+            # back_time =time.time()
+
+            # print("motion sdf", motion_sdf_time- start, "forward", forward_time-motion_sdf_time,"loss",cal_loss_time-forward_time,"back",back_time-cal_loss_time)
+            ## record log
+            # iter_time = time.time() - start
+            self.log[phase][epoch_id]['loss'].append(loss.item())
+            self.log[phase][epoch_id]['rec_loss'].append(rec_loss.item())
+            self.log[phase][epoch_id]['rec_trans_loss'].append(rec_trans_loss.item())
+            self.log[phase][epoch_id]['rec_orient_loss'].append(0)
+            self.log[phase][epoch_id]['rec_body_pose_loss'].append(rec_body_pose_loss.item())
+            self.log[phase][epoch_id]['rec_hand_pose_loss'].append(0)
+            self.log[phase][epoch_id]['rec_sdf_loss'].append(rec_sdf_loss.item())
+            self.log[phase][epoch_id]['rec_hsdf_loss'].append(rec_hsdf_loss.item())
+            # self.log[phase][epoch_id]['smooth_loss1'].append(smooth_loss1.item())
+        self.scheduler.step()
+        my_lr = self.scheduler.optimizer.param_groups[0]['lr']
+        print('lr',my_lr)
+    
+    def _val(self, val_dataloader: DataLoader, epoch_id: int):
+        phase = 'val'
+        self.log[phase][epoch_id] = defaultdict(list)
+        
+        for data in tqdm(val_dataloader):
+            start = time.time()
+            ## unpack data
+            # [pose, scene_sdf, scene_origin, item_key, index, msdf_input, hsdf_input, msdf_in, hsdf_in] = data
+            [pose, scene_sdf, scene_origin, item_key, index] = data
+            B, S, N, _ = pose.shape
+
+
+
+
+            scene_sdf = scene_sdf.cuda()
+            pose = pose.cuda()
+            index = index.cuda()
+            
+            # msdf_input = msdf_input.cuda()
+            # hsdf_input = hsdf_input.cuda()
+            with torch.no_grad():
+                msdf_input = self.get_sdf_grid_batch(pose,scene_sdf, index)
+                hsdf_input = self._get_hsdf(pose, self.scene_points1)
+                bs = pose.shape[0]
+                nj = pose.shape[2]
+                joints_orig = pose[:, :, 14:15].clone()
+                pose = pose - joints_orig
+                pose[:, :, 14:15] = joints_orig
+            
+            # print('1', pose.shape)
+            # print(scene_trans.shape,motion_transformation.shape,scene_sdf.shape,trans.shape,orient.shape,pose_body.shape,pose_hand.shape)
+            hlen = self.config.history_len
+            # print("future orient", future_orient.shape) 64 25 6
+            ## forward
+            future_motion_sdf = msdf_input[:,hlen:,:]
+
+            history_pose = pose[:,:hlen,:,:]
+            future_pose = pose[:,hlen:,:,:]
+
+            
+
+        
+            future_hsdf = hsdf_input[:,hlen:,:]
+            # print("-----------------")
+            # future_motion_sdf = self._get_motion_sdf(future_trans,future_orient,future_pose_body,future_pose_hand,betas,scene_sdf,scene_radius, True)
+            # print(future_motion_sdf.shape)
+           
+            pred_body = self._forward(
+                history_pose,scene_sdf,msdf_input,hsdf_input
+            )
+            # print('2', pose.shape)
+            # print(pred_trans.shape)
+            forward_time = time.time()
+            [ rec_trans_loss, rec_body_pose_loss, rec_sdf_loss, rec_hsdf_loss] = self._cal_loss(
+                future_pose, pred_body, future_hsdf, future_motion_sdf, self.rootidx, scene_sdf, index, self.scene_points
+            )
+         
+            # rec_loss = self.config.weight_loss_rec * rec_trans_loss + \
+            #             self.config.weight_loss_rec * rec_orient_loss + \
+            #             self.config.weight_loss_rec_body_pose * rec_body_pose_loss + \
+            #             self.config.weight_loss_rec_hand_pose * rec_hand_pose_loss
+            # loss = self.config.weight_loss_sdf * rec_sdf_loss + \
+            #         rec_loss
+            rec_loss = self.config.weight_loss_rec * rec_trans_loss + \
+                        self.config.weight_loss_rec_body_pose * rec_body_pose_loss
+            loss = self.config.weight_loss_sdf * rec_sdf_loss + \
+            rec_loss + rec_hsdf_loss
+
 
             path_error = torch.mean((pred_body[:,:,self.rootidx,:] - future_pose[:,:,self.rootidx,:]).norm(dim=-1),dim=0)
             bs,_,jn,_ = future_pose.shape
@@ -775,21 +586,7 @@ class MotionSolver():
             self.log[phase][epoch_id]['pose_error'].append(pose_error.detach().cpu().numpy())
             # self.log[phase][epoch_id]['smooth_loss1'].append(smooth_loss1.item())
     
-        # sdf_err = sdf_err / cont
-        # hsdf_err = hsdf_err / cont
-        # rec_sdf_err = rec_sdf_err / cont
-        # rec_hsdf_err = rec_hsdf_err / cont
-        # sdf_err = sdf_err.detach().cpu().numpy()
-        # hsdf_err = hsdf_err.detach().cpu().numpy()
-        # rec_sdf_err = rec_sdf_err.detach().cpu().numpy()
-        # rec_hsdf_err = rec_hsdf_err.detach().cpu().numpy()
-        # sdf_err = sdf_err[30:]
-        # hsdf_err = hsdf_err[30:]
-        # # Convert arrays to DataFrame
-        # df = pd.DataFrame({'sdf': sdf_err, 'dis': hsdf_err,'rec_sdf':rec_sdf_err,'rec_dis':rec_hsdf_err})
 
-        # # Save DataFrame to CSV file
-        # df.to_csv('pred_muld.csv', index=False)
         ## ckeck best
         cur_criterion = 'rec_loss'
         cur_best = np.mean(self.log[phase][epoch_id][cur_criterion])
@@ -816,16 +613,29 @@ class MotionSolver():
     
     def _epoch_report_val(self, epoch_id: int):
         Console.log("epoch [{}/{}] done...".format(epoch_id+1, self.config.num_epoch))
+        # print(self.log['val'][epoch_id]['path_error'])
+        # print(self.log['val'][epoch_id]['mpjpe'])
+        # print(self.log['val'][epoch_id]['pose_error'])
+        Console.log("epoch [{}/{}] done...".format(epoch_id+1, self.config.num_epoch))
         path_err = self.log['val'][epoch_id]['path_error']
         # print('patherr', path_err)
         path_err = np.stack(path_err, axis = 0)
+        print(path_err.shape)
         pose_err = self.log['val'][epoch_id]['pose_error']
         pose_err = np.stack(pose_err, axis = 0)
         
+        print(pose_err.shape)
         path_err = np.mean(path_err, axis = 0).reshape(60)
         pose_err = np.mean(pose_err, axis = 0).reshape(60)
+        # print("0.5s, path error", path_err[14])
+        # print("1s, path_error", path_err[29])
+        # print("0.5s, pose error", pose_err[14])
+        # print("1s, pose_error", pose_err[29])
+        # print("mean, path_error", path_err.mean())
+        # print("mean, pose_error", pose_err.mean())
         Console.log("0.5s path:{:.5f}, 1.0s path:{:.5f}, 1.5s path:{:.5f}, 2.0s path:{:.5f}".format(path_err[14], path_err[29], path_err[44], path_err[59]))
         Console.log("0.5s pose:{:.5f}, 1.0s pose:{:.5f}, 1.5s pose:{:.5f}, 2.0s pose:{:.5f}".format(pose_err[14], pose_err[29], pose_err[44], pose_err[59]))
+        
         
         epoch_report_str = EPOCH_VAL_REPORT_TEMPLATE.format(
             val_total_loss=round(np.mean(self.log['val'][epoch_id]['loss']), 5),
@@ -851,16 +661,6 @@ class MotionSolver():
     def _epoch_report(self, epoch_id: int):
         Console.log("epoch [{}/{}] done...".format(epoch_id+1, self.config.num_epoch))
 
-        path_err = self.log['val'][epoch_id]['path_error']
-        path_err = np.stack(path_err, axis = 0)
-        pose_err = self.log['val'][epoch_id]['pose_error']
-        pose_err = np.stack(pose_err, axis = 0)
-        
-        path_err = np.mean(path_err, axis = 0).reshape(60)
-        pose_err = np.mean(pose_err, axis = 0).reshape(60)
-        Console.log("0.5s path:{:.5f}, 1.0s path:{:.5f}, 1.5s path:{:.5f}, 2.0s path:{:.5f}".format(path_err[14], path_err[29], path_err[44], path_err[59]))
-        Console.log("0.5s pose:{:.5f}, 1.0s pose:{:.5f}, 1.5s pose:{:.5f}, 2.0s pose:{:.5f}".format(pose_err[14], pose_err[29], pose_err[44], pose_err[59]))
-
         
         epoch_report_str = EPOCH_REPORT_TEMPLATE.format(
             train_total_loss=round(np.mean(self.log['train'][epoch_id]['loss']), 5),
@@ -870,6 +670,7 @@ class MotionSolver():
             train_rec_body_pose_loss=round(np.mean(self.log['train'][epoch_id]['rec_body_pose_loss']), 5),
             train_rec_hand_pose_loss=round(np.mean(self.log['train'][epoch_id]['rec_hand_pose_loss']), 5),
             train_rec_sdf_loss=round(np.mean(self.log['train'][epoch_id]['rec_sdf_loss']), 5),
+            # train_rec_sdf_loss=round(np.mean(self.log['train'][epoch_id]['smooth_loss1']), 5),
             val_total_loss=round(np.mean(self.log['val'][epoch_id]['loss']), 5),
             val_rec_loss=round(np.mean(self.log['val'][epoch_id]['rec_loss']), 5),
             val_rec_trans_loss=round(np.mean(self.log['val'][epoch_id]['rec_trans_loss']), 5),
@@ -883,6 +684,7 @@ class MotionSolver():
             val_pose_error=round(np.mean(self.log['val'][epoch_id]['pose_error']), 5),
             val_path_error=round(np.mean(self.log['val'][epoch_id]['path_error']), 5),
            
+            # val_rec_sdf_loss=round(np.mean(self.log['val'][epoch_id]['smooth_loss1']), 5),
         )
         Console.log(epoch_report_str)
     

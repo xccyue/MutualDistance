@@ -4,9 +4,9 @@ import time
 
 dataset_scene_points = '/hdd/ALL_final_model/MutualDistance/GTAIM/finalmodel/scene_points_150.pkl'
 ## train & test
-batch_size = 2
-learning_rate = 5e-5
-num_epoch = 1
+batch_size = 24
+learning_rate = 5e-4
+num_epoch = 100
 device = 'cuda'
 num_workers = 0
 weight_loss_rec = 1.0
@@ -35,7 +35,6 @@ input_feature_gcn = 311
 hidden_feature_gcn = 256
 p_dropout = 0.5
 dct_n = 90
-hsdf_in =150
 
 nscene_point = 150
 scene_in = 1
@@ -55,8 +54,7 @@ weight_loss_rec_hand_pose = 0.1
 weight_loss_sdf = 1.0
 resume_model = ''
 save_vis_folder = ""
-resume_model_s1 = ''
-resume_model_s2 = ''
+
 ## smplx
 num_pca_comps = 12
 num_betas = 10
@@ -75,41 +73,15 @@ def parse_args():
                         type=str, 
                         default=time.strftime('%Y%m%d_%H%M%S', time.localtime()),
                         help='timestamp')
-    parser.add_argument('--resume_model_s1', 
-                        type=str, 
-                        default=resume_model_s1,
-                        help='timestamp')
-    parser.add_argument('--resume_model_s2', 
-                        type=str, 
-                        default=resume_model_s2,
-                        help='timestamp')
     ## train & test setting
     parser.add_argument('--batch_size', 
                         type=int, 
                         default=batch_size,
                         help='batch size to train')
-    parser.add_argument('--hidden_feature_gcn', 
-                        type=int, 
-                        default=hidden_feature_gcn,
-                        help='batch size to train')
-    ## train & test setting
-    parser.add_argument('--dct_n', 
-                        type=int, 
-                        default=dct_n,
-                        help='batch size to train')
-    parser.add_argument('--hsdf_in', 
-                        type=int, 
-                        default=hsdf_in,
-                        help='batch size to train')
     parser.add_argument('--lr', 
                         type=float, 
                         default=learning_rate,
                         help='initial learing rate')
-    parser.add_argument('--p_dropout', 
-                        type=float, 
-                        default=p_dropout,
-                        help='initial learing rate')
-                        
     parser.add_argument('--num_epoch', 
                         type=int, 
                         default=num_epoch,
