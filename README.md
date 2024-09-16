@@ -40,6 +40,10 @@ python finalmodel/test_motion.py --resume_model xxx/MutualDistance/GTAIM/checkpo
 
 xxx is the path on your systerm.
 
+
+### Re-training of ContAware and STAG
+Please adpot our optimizer to the second stage (Motion Prediction) of ContAware and STAG.
+
 The code will be released soon.
 ## 📝 TODO List
 - [ ] Data preparation.
