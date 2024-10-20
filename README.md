@@ -68,7 +68,7 @@ python stage2/train_motion.py
 ```
 
 ```
-python finalmodel/train_motion.py --resume_model_s1 xxx/MutualDistance/GTAIM/checkpoints/stage1 --resume_model_s2 xxx/MutualDistance/GTAIM/checkpoints/stage2
+python finalmodel/train_motion.py --resume_model_s1 xxx/MutualDistance/HUMANISE/checkpoints/stage1 --resume_model_s2 xxx/MutualDistance/HUMANISE/checkpoints/stage2
 ```
 
 xxx is the path on your systerm.
