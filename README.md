@@ -52,7 +52,7 @@ Please also download the [SMPL-X] (https://smpl-x.is.tue.mpg.de/download.php), h
 After downloading the dataset, please update the path of pure_motion_folder and align_data_folder in the code.
 
 
-We also provide the preprocessed scene sdf file, mutual distance file and checkpoints on [google drive](https://drive.google.com/drive/folders/1QyW6gSJdd2KVerNPAS8xf_wOU06OrNyn?usp=sharing)
+We also provide the preprocessed scene sdf file, mutual distance file and checkpoints on [google drive](https://drive.google.com/drive/folders/1TBXVSvFVO5kyqBZXnpvfFIwfpDMxM-Kp?usp=sharing)
 
 After downloading, please update the paths in the configuration file.
 
