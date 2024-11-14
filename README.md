@@ -1,6 +1,9 @@
 # MutualDistance
 [ECCV 2024] Official PyTorch implementation of the paper "Scene-aware Human Motion Forecasting via Mutual Distance Prediction"
 
+![Project Screenshot](pipeline.jpg)
+
+
 
 ### Datasets
 #### GTM-IM
@@ -92,6 +95,8 @@ Please adpot our optimizer to the second stage (Motion Prediction) of ContAware 
 - [Y] Data preparation.
 - [Y] Release training and evaluation codes.
 - [Y] Release checkpoints.
+- []  Release code of visualization.
+- []  Release training code of stage 1&2 on HUMANISE.
 
 
 ### Acknowledgments
